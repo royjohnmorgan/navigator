@@ -1,7 +1,8 @@
 #include "run.h"
+#include "test_bmp4_data.h"
 
-#define TFT_WIDTH                240U
-#define TFT_HEIGHT               320U
+#define TFT_WIDTH                320U
+#define TFT_HEIGHT               240U
 
 /*
  * Control pins for the SPI display module.
@@ -82,7 +83,7 @@ static void tft_set_address_window(SPI_HandleTypeDef *spi,
 static void tft_init_ili9341(SPI_HandleTypeDef *spi)
 {
   uint8_t pixel_format = 0x55U; /* 16-bit/pixel (RGB565) */
-  uint8_t rotation = 0x48U;     /* MX=0, MY=1, MV=0, BGR=1 */
+  uint8_t rotation = 0x28U;     /* Landscape, BGR */
 
   tft_reset();
 
@@ -102,51 +103,203 @@ static void tft_init_ili9341(SPI_HandleTypeDef *spi)
   HAL_Delay(20U);
 }
 
-static void tft_draw_basic_image(SPI_HandleTypeDef *spi)
+static uint16_t read_u16_le(const uint8_t *data, uint32_t offset)
 {
-  enum { IMAGE_W = 64, IMAGE_H = 64 };
-  uint16_t line[IMAGE_W];
-  const uint16_t start_x = (TFT_WIDTH - IMAGE_W) / 2U;
-  const uint16_t start_y = (TFT_HEIGHT - IMAGE_H) / 2U;
+  return (uint16_t)((uint16_t)data[offset] |
+                    ((uint16_t)data[offset + 1U] << 8));
+}
 
-  tft_set_address_window(spi,
-                         start_x,
-                         start_y,
-                         start_x + IMAGE_W - 1U,
-                         start_y + IMAGE_H - 1U);
+static uint32_t read_u32_le(const uint8_t *data, uint32_t offset)
+{
+  return (uint32_t)data[offset] |
+         ((uint32_t)data[offset + 1U] << 8) |
+         ((uint32_t)data[offset + 2U] << 16) |
+         ((uint32_t)data[offset + 3U] << 24);
+}
 
+static void tft_render_bmp4(SPI_HandleTypeDef *spi, const BitmapImage *bitmap)
+{
+  uint16_t line[TFT_WIDTH];
+  uint16_t palette[16];
+  uint32_t data_offset;
+  uint32_t dib_size;
+  uint32_t width;
+  int32_t height_signed;
+  uint32_t height;
+  uint16_t bits_per_pixel;
+  uint32_t compression;
+  uint32_t colors_used;
+  uint32_t palette_offset;
+  uint32_t row_stride;
+  uint8_t top_down = 0U;
+
+  if ((bitmap == NULL) ||
+      (bitmap->data == NULL) ||
+      (bitmap->width != TFT_WIDTH) ||
+      (bitmap->height != TFT_HEIGHT))
+  {
+    return;
+  }
+
+  if ((bitmap->data_len < 118U) ||
+      (bitmap->data[0] != 'B') ||
+      (bitmap->data[1] != 'M'))
+  {
+    return;
+  }
+
+  data_offset = read_u32_le(bitmap->data, 10U);
+  dib_size = read_u32_le(bitmap->data, 14U);
+  width = read_u32_le(bitmap->data, 18U);
+  height_signed = (int32_t)read_u32_le(bitmap->data, 22U);
+  bits_per_pixel = read_u16_le(bitmap->data, 28U);
+  compression = read_u32_le(bitmap->data, 30U);
+  colors_used = read_u32_le(bitmap->data, 46U);
+  palette_offset = 14U + dib_size;
+
+  if (height_signed < 0)
+  {
+    top_down = 1U;
+    height = (uint32_t)(-height_signed);
+  }
+  else
+  {
+    height = (uint32_t)height_signed;
+  }
+
+  if ((width != bitmap->width) ||
+      (height != bitmap->height) ||
+      (bits_per_pixel != 4U) ||
+      (compression != 0U))
+  {
+    return;
+  }
+
+  if ((colors_used == 0U) || (colors_used > 16U))
+  {
+    colors_used = 16U;
+  }
+
+  if ((palette_offset + (colors_used * 4U)) > bitmap->data_len)
+  {
+    return;
+  }
+
+  for (uint32_t i = 0; i < colors_used; i++)
+  {
+    uint32_t entry_offset = palette_offset + (i * 4U);
+    uint8_t blue = bitmap->data[entry_offset];
+    uint8_t green = bitmap->data[entry_offset + 1U];
+    uint8_t red = bitmap->data[entry_offset + 2U];
+    uint16_t color = (uint16_t)(((uint16_t)(red & 0xF8U) << 8) |
+                                ((uint16_t)(green & 0xFCU) << 3) |
+                                ((uint16_t)(blue & 0xF8U) >> 3));
+
+    palette[i] = (uint16_t)((color << 8) | (color >> 8));
+  }
+
+  for (uint32_t i = colors_used; i < 16U; i++)
+  {
+    palette[i] = 0U;
+  }
+
+  row_stride = ((((width + 1U) / 2U) + 3U) / 4U) * 4U;
+  if ((data_offset + (row_stride * height)) > bitmap->data_len)
+  {
+    return;
+  }
+
+  tft_set_address_window(spi, 0U, 0U, TFT_WIDTH - 1U, TFT_HEIGHT - 1U);
   tft_select_data_mode();
 
-  for (uint16_t y = 0; y < IMAGE_H; y++)
+  for (uint16_t y = 0U; y < TFT_HEIGHT; y++)
   {
-    for (uint16_t x = 0; x < IMAGE_W; x++)
+    uint32_t src_y = top_down ? y : ((height - 1U) - y);
+    uint32_t row_offset = data_offset + (src_y * row_stride);
+
+    for (uint16_t x = 0U; x < TFT_WIDTH; x++)
     {
-      uint16_t color;
+      uint8_t packed = bitmap->data[row_offset + ((uint32_t)x / 2U)];
+      uint8_t color_index = ((x & 1U) == 0U) ? (packed >> 4) : (packed & 0x0FU);
 
-      if (((x / 8U) + (y / 8U)) % 2U == 0U)
+      if (color_index >= colors_used)
       {
-        color = 0xF800U; /* Red */
-      }
-      else
-      {
-        color = 0x001FU; /* Blue */
+        return;
       }
 
-      line[x] = (uint16_t)((color << 8) | (color >> 8));
+      line[x] = palette[color_index];
     }
 
-    HAL_StatusTypeDef result = HAL_SPI_Transmit(spi, (uint8_t *)line, IMAGE_W * 2U, HAL_MAX_DELAY);
+    (void)HAL_SPI_Transmit(spi, (uint8_t *)line, TFT_WIDTH * 2U, HAL_MAX_DELAY);
+  }
+}
 
+static void tft_render_rgb565_raw(SPI_HandleTypeDef *spi, const BitmapImage *bitmap)
+{
+  uint16_t line[TFT_WIDTH];
+
+  if ((bitmap == NULL) ||
+      (bitmap->data == NULL) ||
+      (bitmap->width != TFT_WIDTH) ||
+      (bitmap->height != TFT_HEIGHT) ||
+      (bitmap->data_len != ((uint32_t)bitmap->width * (uint32_t)bitmap->height * 2U)))
+  {
+    return;
+  }
+
+  tft_set_address_window(spi, 0U, 0U, TFT_WIDTH - 1U, TFT_HEIGHT - 1U);
+  tft_select_data_mode();
+
+  for (uint16_t y = 0U; y < TFT_HEIGHT; y++)
+  {
+    uint32_t row_offset = (uint32_t)y * (uint32_t)TFT_WIDTH * 2U;
+
+    for (uint16_t x = 0U; x < TFT_WIDTH; x++)
+    {
+      uint32_t pixel_offset = row_offset + ((uint32_t)x * 2U);
+      line[x] = (uint16_t)(((uint16_t)bitmap->data[pixel_offset] << 8) |
+                           (uint16_t)bitmap->data[pixel_offset + 1U]);
+    }
+
+    (void)HAL_SPI_Transmit(spi, (uint8_t *)line, TFT_WIDTH * 2U, HAL_MAX_DELAY);
+  }
+}
+
+static void tft_render_bitmap_image(SPI_HandleTypeDef *spi, const BitmapImage *bitmap)
+{
+  if (bitmap == NULL)
+  {
+    return;
+  }
+
+  switch (bitmap->format)
+  {
+    case BITMAP_FORMAT_BMP4:
+      tft_render_bmp4(spi, bitmap);
+      break;
+
+    case BITMAP_FORMAT_RGB565_RAW:
+      tft_render_rgb565_raw(spi, bitmap);
+      break;
+
+    default:
+      break;
   }
 }
 
 int run(SPI_HandleTypeDef *spi)
 {
-	  HAL_GPIO_WritePin(TFT_LGHT_PORT, TFT_LGHT_PIN, GPIO_PIN_SET);
-	  HAL_Delay(2000U);
+  //Switch screen on
+  HAL_GPIO_WritePin(TFT_LGHT_PORT, TFT_LGHT_PIN, GPIO_PIN_SET);
 
+  //Delay to allow screen to start
+  HAL_Delay(1000U);
+
+  //Init display
   tft_init_ili9341(spi);
-  tft_draw_basic_image(spi);
+
+  //Render image
+  tft_render_bitmap_image(spi, &g_test_bmp4_bitmap);
 
   while (1)
   {
