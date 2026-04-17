@@ -8,10 +8,12 @@
  * PA0 -> D/C
  * PA1 -> RST
  */
-#define TFT_DC_PORT              GPIOA
-#define TFT_DC_PIN               GPIO_PIN_0
+#define TFT_DC_PORT              GPIOB
+#define TFT_DC_PIN               GPIO_PIN_9
 #define TFT_RST_PORT             GPIOA
-#define TFT_RST_PIN              GPIO_PIN_1
+#define TFT_RST_PIN              GPIO_PIN_8
+#define TFT_LGHT_PORT             GPIOB
+#define TFT_LGHT_PIN              GPIO_PIN_8
 
 #define ILI9341_SWRESET          0x01U
 #define ILI9341_SLPOUT           0x11U
@@ -133,12 +135,16 @@ static void tft_draw_basic_image(SPI_HandleTypeDef *spi)
       line[x] = (uint16_t)((color << 8) | (color >> 8));
     }
 
-    HAL_SPI_Transmit(spi, (uint8_t *)line, IMAGE_W * 2U, HAL_MAX_DELAY);
+    HAL_StatusTypeDef result = HAL_SPI_Transmit(spi, (uint8_t *)line, IMAGE_W * 2U, HAL_MAX_DELAY);
+
   }
 }
 
 int run(SPI_HandleTypeDef *spi)
 {
+	  HAL_GPIO_WritePin(TFT_LGHT_PORT, TFT_LGHT_PIN, GPIO_PIN_SET);
+	  HAL_Delay(2000U);
+
   tft_init_ili9341(spi);
   tft_draw_basic_image(spi);
 

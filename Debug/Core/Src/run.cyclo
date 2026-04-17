@@ -1,1 +1,9 @@
-../Core/Src/run.c:3:5:run	1
+../Core/Src/run.c:27:13:tft_select_command_mode	1
+../Core/Src/run.c:32:13:tft_select_data_mode	1
+../Core/Src/run.c:37:13:tft_write_command	1
+../Core/Src/run.c:43:13:tft_write_data	1
+../Core/Src/run.c:49:13:tft_reset	1
+../Core/Src/run.c:57:13:tft_set_address_window	1
+../Core/Src/run.c:82:13:tft_init_ili9341	1
+../Core/Src/run.c:105:13:tft_draw_basic_image	4
+../Core/Src/run.c:143:5:run	1
